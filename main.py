@@ -12,12 +12,23 @@ from ipv8.peerdiscovery.network import PeerObserver
 from ipv8.util import run_forever
 from ipv8_service import IPv8
 
+from pow import make_message
+
+NONCE = 129419920
 
 class MyCommunity(Community, PeerObserver):
     # Register this community with a randomly generated community ID.
     # Other peers will connect to this community based on this identifier.
     community_id = bytes.fromhex("2c1cc6e35ff484f99ebdfb6108477783c0102881")
     src_id = bytes.fromhex("4c69624e61434c504b3a86b23934a28d669c390e2d1fc0b0870706c4591cc0cb178bc5a811da6d87d27ef319b2638ef60cc8d119724f4c53a1ebfad919c3ac4136c501ce5c09364e0ebb")
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+        self.add_message_handler(2, self.process_response)
+
+    def process_response(self, peer: Peer, payload: bytes) -> None:
+        print("Received response from peer %s with payload %s" % (peer, payload))
 
 
     def on_peer_added(self, peer: Peer) -> None:
@@ -37,6 +48,8 @@ class MyCommunity(Community, PeerObserver):
             print("Public key does not match src_id, refusing to proceed!")
             return
         print("Public key matches src_id, proceeding with connection!")
+
+        self.ez_send(peer, make_message(NONCE.to_bytes(8, "big")))
 
     def on_peer_removed(self, peer: Peer) -> None:
         pass
