@@ -1,4 +1,5 @@
 import base64
+from dataclasses import dataclass
 import os
 from asyncio import run
 
@@ -6,6 +7,7 @@ from ipv8 import peer
 from ipv8.community import Community
 from ipv8.configuration import ConfigBuilder, Strategy, WalkerDefinition, default_bootstrap_defs
 from ipv8.messaging.payload import IntroductionResponsePayload, NewIntroductionResponsePayload
+from ipv8.messaging.payload_dataclass import DataClassPayload
 from ipv8.messaging.payload_headers import GlobalTimeDistributionPayload
 from ipv8.peer import Peer
 from ipv8.peerdiscovery.network import PeerObserver
@@ -13,6 +15,10 @@ from ipv8.util import run_forever
 from ipv8_service import IPv8
 
 from pow import make_message
+
+@dataclass
+class Submission(DataClassPayload[1]):
+    payl: bytes
 
 NONCE = 129419920
 
@@ -49,7 +55,7 @@ class MyCommunity(Community, PeerObserver):
             return
         print("Public key matches src_id, proceeding with connection!")
 
-        self.ez_send(peer, make_message(NONCE.to_bytes(8, "big")))
+        self.ez_send(peer, Submission(payl=make_message(NONCE.to_bytes(8, "big"))))
 
     def on_peer_removed(self, peer: Peer) -> None:
         pass
