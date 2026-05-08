@@ -31,6 +31,10 @@ class MyCommunity(Community, PeerObserver):
             print("Public key does not match src_id, refusing to proceed!")
             return
         print("Public key matches src_id, proceeding with connection!")
+    
+    def introduction_response_callback(self, peer: Peer, dist: GlobalTimeDistributionPayload,
+                                       payload: IntroductionResponsePayload | NewIntroductionResponsePayload) -> None:
+        print("Received introduction response from peer %s with distribution %s and payload %s" % (peer, dist, payload))
 
     def on_peer_removed(self, peer: Peer) -> None:
         pass
