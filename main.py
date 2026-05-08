@@ -14,11 +14,11 @@ from ipv8.peerdiscovery.network import PeerObserver
 from ipv8.util import run_forever
 from ipv8_service import IPv8
 
-from pow import make_message
-
 @dataclass
 class Submission(DataClassPayload[1]):
-    payl: bytes
+    email: str
+    github_url: str
+    nonce: int
 
 NONCE = 129419920
 
@@ -55,7 +55,7 @@ class MyCommunity(Community, PeerObserver):
             return
         print("Public key matches src_id, proceeding with connection!")
 
-        self.ez_send(peer, Submission(payl=make_message(NONCE.to_bytes(8, "big"))))
+        self.ez_send(peer, Submission(email="d.blanovschi@student.tudelft.nl", github_url="https://github.com/dnbln/a", nonce=NONCE))
 
     def on_peer_removed(self, peer: Peer) -> None:
         pass
