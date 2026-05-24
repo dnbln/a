@@ -379,10 +379,10 @@ class Chain:
 
 GENESIS_HEADER = BlockHeader(
     prev_hash=b"\x00" * 32,
-    txs_hash=b"\x00" * 32,
+    txs_hash=hashlib.sha256(b"").digest(),
     timestamp=0,
     difficulty=DIFFICULTY,
-    nonce=3088879,
+    nonce=6626595,
 )
 
 GENESIS = Block(GENESIS_HEADER, None, 0)
