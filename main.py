@@ -13,6 +13,7 @@ from ipv8.peer import Peer
 from ipv8.peerdiscovery.network import PeerObserver
 from ipv8.util import run_forever
 from ipv8_service import IPv8
+import binascii
 
 @dataclass
 class Submission(DataClassPayload[1]):
@@ -45,6 +46,8 @@ class MyCommunity(Community, PeerObserver):
                                        payload: IntroductionResponsePayload | NewIntroductionResponsePayload) -> None:
         print("Received introduction response from peer %s with distribution %s and payload %s" % (peer, dist, payload))
 
+        print("My public key: %s" % binascii.hexlify(self.my_peer.public_key.key_to_bin()).decode())
+
         bin = peer.key.pub().key_to_bin()
         # print("Peer public key: %s" % bin.hex())
 
@@ -69,7 +72,7 @@ class MyCommunity(Community, PeerObserver):
 
 async def start_communities() -> None:
     builder = ConfigBuilder().clear_keys().clear_overlays()
-    builder.add_key("my peer", "medium", "key.pem")
+    builder.add_key("my peer", "curve25519", "keynew2.pem")
     # Instruct IPv8 to load our custom overlay, registered in _COMMUNITIES.
     # We use the "my peer" key, which we registered before.
     # We will attempt to find other peers in this overlay using the

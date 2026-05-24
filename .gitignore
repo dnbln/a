@@ -123,3 +123,4 @@ sqlite/
 **.DS_Store
 
 /*.pem
+/gid
