@@ -353,7 +353,7 @@ class Chain:
         self.blocks = blocks
     
     def validate(self) -> bool:
-        for i in range(0, len(self.blocks)-2):
+        for i in range(0, len(self.blocks)-1):
             if self.blocks[i].header.prev_hash != self.blocks[i+1].hash():
                 return False
         return True
