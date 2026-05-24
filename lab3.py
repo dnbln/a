@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import hashlib
 import time
 from types import CoroutineType
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 import typing
 
 from ipv8.community import Community, CommunitySettings
@@ -297,13 +297,16 @@ class BlockHeader:
         self.difficulty = difficulty
         self.nonce = nonce
 
-    def pow(self) -> None:
+    async def pow(self) -> None:
         while True:
             h = self.hash()
             whole_bytes = self.difficulty // 8
             if h[0:whole_bytes] == b"\x00" * whole_bytes and h[whole_bytes] < (1 << (8 - self.difficulty % 8)):
                 break
             self.nonce += 1
+
+            if self.nonce % 10000 == 0:
+                await asyncio.sleep(0)
 
     def hash(self) -> bytes:
         return hashlib.sha256(
@@ -405,6 +408,7 @@ class Lab3BlockchainCommunity(Community):
         self.tip_block: int = 0
         self.done: asyncio.Event = asyncio.Event()
         self.error: str | None = None
+        self.mempool: list[(Transaction, Callable[[BlockchainSubmitTransactionResponsePayload], Any])] = []
 
         self.add_message_handler(BlockchainSubmitTransactionPayload, self.on_submit_transaction)
         self.add_message_handler(BlockchainSubmitTransactionResponsePayload, self.on_submit_transaction_response)
@@ -446,7 +450,8 @@ class Lab3BlockchainCommunity(Community):
 
     def started(self) -> None:
         self.network.add_peer_observer(self)
-        self.register_task("lab3_blockchain_loop", self.loop, interval=5, delay=0.0)
+        self.register_task("lab3_blockchain_loop", self.loop, interval=30, delay=0.0)
+        self.register_task("lab3_mempool_loop", self.mempool_task, interval=5, delay=0.0)
 
     async def loop(self) -> None:
         if self.done.is_set():
@@ -491,6 +496,34 @@ class Lab3BlockchainCommunity(Community):
     async def on_submit_transaction(self, peer: Peer, payload: BlockchainSubmitTransactionPayload) -> None:
         await self.on_submit_transaction_impl(peer, payload, lambda response_payload: self.ez_send(peer, response_payload))
 
+    async def mempool_task(self) -> None:
+        try:
+            transaction, resp = self.mempool.pop(0)
+        except IndexError:
+            return
+
+        tip_block = self.blocks[self.tip_block]
+
+        chain = self._compute_chain_from_block(tip_block)
+
+        prev_hash = tip_block.hash()
+        header = BlockHeader(
+            prev_hash=prev_hash,
+            txs_hash=chain.txs_hash(),
+            timestamp=transaction.timestamp,
+            difficulty=DIFFICULTY,
+        )
+        print("[Blockchain] Mining block...")
+        await header.pow()
+        print(f"[Blockchain] Block mined with nonce {header.nonce} and hash {header.hash().hex()}")
+        l = len(self.blocks)
+        self.blocks.append(Block(header, transaction, l))
+        self.tip_block = l
+        print(f"[Blockchain] Updated tip block to {self.tip_block} with hash {header.hash().hex()}")
+
+        await await_if_necessary(resp(BlockchainSubmitTransactionResponsePayload(True, transaction.tx_hash(), "Transaction accepted.")))
+                
+
     async def on_submit_transaction_impl(self,
                                          peer: Peer,
                                          payload: BlockchainSubmitTransactionPayload,
@@ -513,26 +546,7 @@ class Lab3BlockchainCommunity(Community):
 
         print(f"[Blockchain] Transaction signature is valid. Accepting transaction.")
 
-        tip_block = self.blocks[self.tip_block]
-        
-        chain = self._compute_chain_from_block(tip_block)
-
-        prev_hash = tip_block.hash()
-        header = BlockHeader(
-            prev_hash=prev_hash,
-            txs_hash=chain.txs_hash(),
-            timestamp=transaction.timestamp,
-            difficulty=DIFFICULTY,
-        )
-        print("[Blockchain] Mining block...")
-        header.pow()
-        print(f"[Blockchain] Block mined with nonce {header.nonce} and hash {header.hash().hex()}")
-        l = len(self.blocks)
-        self.blocks.append(Block(header, transaction, l))
-        self.tip_block = l
-        print(f"[Blockchain] Updated tip block to {self.tip_block} with hash {header.hash().hex()}")
-
-        await await_if_necessary(resp(BlockchainSubmitTransactionResponsePayload(True, transaction.tx_hash(), "Transaction accepted.")))
+        self.mempool.append((transaction, resp))
 
         return
     
