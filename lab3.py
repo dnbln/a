@@ -566,7 +566,6 @@ class Lab3BlockchainCommunity(Community):
         if height > chain.height():
             return None
         for block in chain.blocks:
-            print(f"[Blockchain] Checking block at height {block.height} with hash {block.hash().hex()}")
             if block.height == height:
                 return block
         return None
