@@ -419,15 +419,12 @@ class Lab3BlockchainCommunity(Community):
         self.add_message_handler(BlockchainGetBlockPayload, self.on_get_block)
         self.add_message_handler(BlockchainGetBlockResponsePayload, self.on_get_block_response)
 
-    def _find_block_in_mempool_by_block_hash(self, h: bytes) -> Block | None:
-        return self.blocks.get(h)
-
     def _compute_chain_from_block(self, block: Block) -> Chain:
         chain_blocks = []
         current_block = block
         while current_block != GENESIS:
             chain_blocks.append(current_block)
-            prev_block = self._find_block_in_mempool_by_block_hash(current_block.header.prev_hash)
+            prev_block = self.blocks.get(current_block.header.prev_hash)
             if prev_block is None:
                 raise ValueError("Invalid block: previous block not found in mempool.")
             current_block = prev_block
