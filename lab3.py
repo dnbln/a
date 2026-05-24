@@ -341,10 +341,9 @@ class Transaction:
         ).digest()
 
 class Block:
-    def __init__(self, header: BlockHeader, transaction: Transaction | None, mempool_id: bytes, height: int) -> None:
+    def __init__(self, header: BlockHeader, transaction: Transaction | None, height: int) -> None:
         self.header = header
         self.transaction = transaction
-        self.mempool_id = mempool_id
         self.height = height
 
     def hash(self) -> bytes:
@@ -389,7 +388,7 @@ GENESIS_HEADER = BlockHeader(
     nonce=6626595,
 )
 
-GENESIS = Block(GENESIS_HEADER, None, GENESIS_HEADER.hash(), 0)
+GENESIS = Block(GENESIS_HEADER, None, 0)
 
 TEST_MODE = False
 
@@ -446,8 +445,8 @@ class Lab3BlockchainCommunity(Community):
 
     def started(self) -> None:
         self.network.add_peer_observer(self)
-        self.register_task("lab3_blockchain_loop", self.loop, interval=30, delay=0.0)
-        self.register_task("lab3_mempool_loop", self.mempool_task, interval=5, delay=0.0)
+        self.register_task("lab3_blockchain_loop", self.loop, interval=10, delay=0.0)
+        self.register_task("lab3_mempool_loop", self.mempool_task, interval=1, delay=0.0)
 
     async def loop(self) -> None:
         if self.done.is_set():
@@ -510,7 +509,7 @@ class Lab3BlockchainCommunity(Community):
         await header.pow()
         print(f"[Blockchain] Block mined with nonce {header.nonce} and hash {header.hash().hex()}")
         h = header.hash()
-        self.blocks[h] = Block(header, transaction, h, chain.height() + 1)
+        self.blocks[h] = Block(header, transaction, chain.height() + 1)
         self.tip_block = h
         print(f"[Blockchain] Updated tip block to {self.tip_block.hex()} with hash {header.hash().hex()}")
 
