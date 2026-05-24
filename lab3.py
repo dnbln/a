@@ -341,10 +341,11 @@ class Transaction:
         ).digest()
 
 class Block:
-    def __init__(self, header: BlockHeader, transaction: Transaction | None, mempool_id: int) -> None:
+    def __init__(self, header: BlockHeader, transaction: Transaction | None, mempool_id: bytes, height: int) -> None:
         self.header = header
         self.transaction = transaction
         self.mempool_id = mempool_id
+        self.height = height
 
     def hash(self) -> bytes:
         return self.header.hash()
@@ -361,7 +362,7 @@ class Chain:
                 return False
         return True
     
-    def length(self) -> int:
+    def height(self) -> int:
         return len(self.blocks) - 1 # exclude genesis block
     
     def tip_block(self) -> Block:
@@ -388,7 +389,7 @@ GENESIS_HEADER = BlockHeader(
     nonce=6626595,
 )
 
-GENESIS = Block(GENESIS_HEADER, None, 0)
+GENESIS = Block(GENESIS_HEADER, None, GENESIS_HEADER.hash(), 0)
 
 TEST_MODE = False
 
@@ -404,8 +405,9 @@ class Lab3BlockchainCommunity(Community):
         super().__init__(settings)
 
         self.member_keys_hex: list[str] = []
-        self.blocks: list[Block] = [GENESIS]
-        self.tip_block: int = 0
+        self.blocks: dict[bytes, Block] = {}
+        self.blocks[GENESIS.hash()] = GENESIS
+        self.tip_block: bytes = GENESIS.hash()
         self.done: asyncio.Event = asyncio.Event()
         self.error: str | None = None
         self.mempool: list[(Transaction, Callable[[BlockchainSubmitTransactionResponsePayload], Any])] = []
@@ -418,11 +420,8 @@ class Lab3BlockchainCommunity(Community):
         self.add_message_handler(BlockchainGetBlockResponsePayload, self.on_get_block_response)
 
     def _find_block_in_mempool_by_block_hash(self, h: bytes) -> Block | None:
-        for block in self.blocks:
-            if block.hash() == h:
-                return block
-        return None
-    
+        return self.blocks.get(h)
+
     def _compute_chain_from_block(self, block: Block) -> Chain:
         chain_blocks = []
         current_block = block
@@ -502,13 +501,10 @@ class Lab3BlockchainCommunity(Community):
         except IndexError:
             return
 
-        tip_block = self.blocks[self.tip_block]
+        chain = self._compute_chain_from_block(self.blocks[self.tip_block])
 
-        chain = self._compute_chain_from_block(tip_block)
-
-        prev_hash = tip_block.hash()
         header = BlockHeader(
-            prev_hash=prev_hash,
+            prev_hash=self.tip_block,
             txs_hash=chain.txs_hash(),
             timestamp=transaction.timestamp,
             difficulty=DIFFICULTY,
@@ -516,10 +512,10 @@ class Lab3BlockchainCommunity(Community):
         print("[Blockchain] Mining block...")
         await header.pow()
         print(f"[Blockchain] Block mined with nonce {header.nonce} and hash {header.hash().hex()}")
-        l = len(self.blocks)
-        self.blocks.append(Block(header, transaction, l))
-        self.tip_block = l
-        print(f"[Blockchain] Updated tip block to {self.tip_block} with hash {header.hash().hex()}")
+        h = header.hash()
+        self.blocks[h] = Block(header, transaction, h, chain.height() + 1)
+        self.tip_block = h
+        print(f"[Blockchain] Updated tip block to {self.tip_block.hex()} with hash {header.hash().hex()}")
 
         await await_if_necessary(resp(BlockchainSubmitTransactionResponsePayload(True, transaction.tx_hash(), "Transaction accepted.")))
                 
@@ -557,18 +553,27 @@ class Lab3BlockchainCommunity(Community):
     async def on_get_chain_height_impl(self, peer: Peer, payload: BlockchainGetChainHeightPayload, resp: typing.Callable[[BlockchainGetChainHeightResponsePayload], Any]) -> None:
         print(f"[Blockchain] Received chain height request from {peer} with request ID {payload.request_id}")
 
-        print(f"[Blockchain] tip block is {self.tip_block} with hash {self.blocks[self.tip_block].hash().hex()}")
+        print(f"[Blockchain] tip block is {self.tip_block.hex()}")
         chain = self._compute_chain_from_block(self.blocks[self.tip_block])
 
-        await await_if_necessary(resp(BlockchainGetChainHeightResponsePayload(payload.request_id, chain.length(), chain.tip_block().hash())))
+        await await_if_necessary(resp(BlockchainGetChainHeightResponsePayload(payload.request_id, chain.height(), chain.tip_block().hash())))
 
         return
     
     def _find_block_at_height(self, height: int) -> Block | None:
         if height < 0 or height >= len(self.blocks):
             return None
-        # TODO: make it a tree
-        return self.blocks[height]
+        tip = self.blocks.get(self.tip_block)
+        if tip is None:
+            return None
+        chain = self._compute_chain_from_block(tip)
+        if height > chain.height():
+            return None
+        for block in chain.blocks:
+            print(f"[Blockchain] Checking block at height {block.height} with hash {block.hash().hex()}")
+            if block.height == height:
+                return block
+        return None
     
     @lazy_wrapper(BlockchainGetBlockPayload)
     async def on_get_block(self, peer: Peer, payload: BlockchainGetBlockPayload) -> None:
