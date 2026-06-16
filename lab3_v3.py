@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import itertools
 import os
+import random
 import time
 from dataclasses import dataclass
 from types import CoroutineType
@@ -492,12 +493,11 @@ class Lab3BlockchainCommunity(Community, PeerObserver):
         self.done = asyncio.Event()
         self.error: str | None = None
         self.mempool: dict[bytes, Transaction] = {}
-        self.known_transactions: set[bytes] = set()
+        self.known_transactions: dict[bytes, Transaction] = {}  # Changed to dict to track actual transactions for reorgs
         self.pending_request_ids: itertools.count[int] = itertools.count(1)
         self.pending_height_requests: dict[int, asyncio.Future[BlockchainGetChainHeightResponsePayload]] = {}
         self.pending_block_requests: dict[int, asyncio.Future[BlockchainGetBlockResponsePayload]] = {}
         self.local_key_hex: str | None = None
-        self.miner_key_hex: str | None = None
         self.empty_blocks_after_transaction = 3
         self.blocks_since_last_nonempty = 0
 
@@ -512,10 +512,6 @@ class Lab3BlockchainCommunity(Community, PeerObserver):
     def configure(self, member_keys_hex: Sequence[str], miner_key_hex: str | None = None) -> None:
         self.member_keys_hex = list(member_keys_hex)
         self.local_key_hex = self.my_peer.public_key.key_to_bin().hex()
-        chosen_miner = normalize_public_key_hex(miner_key_hex) if miner_key_hex is not None else self.member_keys_hex[0]
-        if chosen_miner not in self.member_keys_hex:
-            raise ValueError("miner key must be one of the 3 member keys")
-        self.miner_key_hex = chosen_miner
 
     def started(self) -> None:
         self.network.add_peer_observer(self)
@@ -524,12 +520,10 @@ class Lab3BlockchainCommunity(Community, PeerObserver):
 
     def on_peer_added(self, peer: Peer) -> None:
         key_hex = peer.public_key.key_to_bin().hex()
-        print(f"[blockchain] peer added {key_hex}")
         if key_hex == LAB3_SERVER_PUBLIC_KEY_HEX:
             print("[blockchain] found verified server")
         elif key_hex in self.member_keys_hex:
-            role = "miner" if key_hex == self.miner_key_hex else "verifier"
-            print(f"[blockchain] found teammate {key_hex} ({role})")
+            print(f"[blockchain] found teammate {key_hex} (peer miner)")
 
     def on_peer_removed(self, peer: Peer) -> None:
         pass
@@ -543,9 +537,6 @@ class Lab3BlockchainCommunity(Community, PeerObserver):
     def peer_key_hex(self, peer: Peer) -> str:
         return peer.public_key.key_to_bin().hex()
 
-    def is_miner(self) -> bool:
-        return self.local_key_hex == self.miner_key_hex
-
     def current_height(self) -> int:
         return self.blocks_by_hash[self.tip_hash].height
 
@@ -554,12 +545,6 @@ class Lab3BlockchainCommunity(Community, PeerObserver):
 
     def teammate_peers(self) -> list[Peer]:
         return [peer for peer in self.get_peers() if self.is_teammate(peer)]
-
-    def leader_peer(self) -> Peer | None:
-        for peer in self.teammate_peers():
-            if self.peer_key_hex(peer) == self.miner_key_hex:
-                return peer
-        return None
 
     def _find_block_at_height(self, height: int) -> Block | None:
         block_hash = self.blocks_by_height.get(height)
@@ -616,18 +601,20 @@ class Lab3BlockchainCommunity(Community, PeerObserver):
     def _adopt_block(self, block: Block) -> bool:
         known = self.blocks_by_hash.get(block.hash())
         if known is not None:
+            # Tie breaker/longest chain resolution logic if we find a longer path via known forks
             if block.height > self.current_height():
                 self.tip_hash = block.hash()
-                self.blocks_by_height[block.height] = block.hash()
+                self._rebuild_canonical_index()
             return False
 
         self._validate_block(block)
         self.blocks_by_hash[block.hash()] = block
 
+        # The core rule of Bitcoin/longest chain consensus
         if block.height > self.current_height():
             self.tip_hash = block.hash()
             self._rebuild_canonical_index()
-            print(f"[blockchain] adopted new tip at height {block.height} {block.hash().hex()}")
+            print(f"[blockchain] adopted new LONGEST tip at height {block.height} {block.hash().hex()}")
             return True
 
         return False
@@ -662,9 +649,7 @@ class Lab3BlockchainCommunity(Community, PeerObserver):
         if TEST_MODE:
             await self.try_submit_transaction_test()
 
-        if not self.is_miner():
-            return
-
+        # All peers can now compete to mine simultaneously
         txs: tuple[bytes, ...]
         mined_nonempty = False
 
@@ -689,12 +674,17 @@ class Lab3BlockchainCommunity(Community, PeerObserver):
         print(f"[blockchain] mining block at height {parent.height + 1} with {len(txs)} tx")
         solved_header = await self._mine_header(header)
         block = Block(height=parent.height + 1, header=solved_header, tx_hashes=txs)
+        
+        # Check if someone else won the race while we were mining this block
+        if block.header.prev_hash != self.tip_hash:
+             print("[blockchain] Tip changed while mining, abandoning current candidate block.")
+             return
+
         adopted = self._adopt_block(block)
         if not adopted:
             return
 
         if mined_nonempty:
-            self.mempool.pop(txs[0], None)
             self.blocks_since_last_nonempty = 0
         else:
             self.blocks_since_last_nonempty += 1
@@ -703,24 +693,26 @@ class Lab3BlockchainCommunity(Community, PeerObserver):
         self._announce_block(block)
 
     async def sync_loop(self) -> None:
-        if self.is_miner():
+        # Every node should sync from others to learn about longer chains
+        teammates = self.teammate_peers()
+        if not teammates:
             return
-
-        leader = self.leader_peer()
-        if leader is None:
-            return
+            
+        # Poll a random teammate to discover forks or alternative longer paths
+        target_peer = random.choice(teammates)
 
         try:
-            height_response = await self.request_chain_height(leader)
+            height_response = await self.request_chain_height(target_peer)
         except Exception:
             return
 
         if height_response.height <= self.current_height():
             return
 
+        # Fetch blocks sequentially to evaluate the structural integrity of their chain
         for height in range(self.current_height() + 1, height_response.height + 1):
             try:
-                response = await self.request_block(leader, height)
+                response = await self.request_block(target_peer, height)
                 block = self._payload_to_block(response)
                 self._adopt_block(block)
                 self._drop_confirmed_transactions()
@@ -734,14 +726,19 @@ class Lab3BlockchainCommunity(Community, PeerObserver):
             self.ez_send(peer, payload)
 
     def _drop_confirmed_transactions(self) -> None:
+        # Re-evaluate mempool contents based on the current active canonical chain path.
+        # This prevents transaction loss during chain reorganizations (reorgs).
         confirmed = set()
         current = self.current_tip()
         while current.height > 0:
             for tx_hash in current.tx_hashes:
                 confirmed.add(tx_hash)
             current = self.blocks_by_hash[current.header.prev_hash]
-        for tx_hash in confirmed:
-            self.mempool.pop(tx_hash, None)
+            
+        # Rebuild clean mempool: everything we know about minus what is confirmed on the main chain branch
+        self.mempool = {
+            tx_hash: tx for tx_hash, tx in self.known_transactions.items() if tx_hash not in confirmed
+        }
 
     async def request_chain_height(self, peer: Peer) -> BlockchainGetChainHeightResponsePayload:
         request_id = next(self.pending_request_ids)
@@ -802,13 +799,13 @@ class Lab3BlockchainCommunity(Community, PeerObserver):
             return
 
         if tx_hash not in self.known_transactions:
-            self.known_transactions.add(tx_hash)
+            self.known_transactions[tx_hash] = transaction
             self.mempool[tx_hash] = transaction
 
-            if not self.is_miner():
-                leader = self.leader_peer()
-                if leader is not None and self.peer_key_hex(peer) != self.miner_key_hex:
-                    self.ez_send(leader, payload)
+            # Gossip (flood-fill) the transaction out to all teammate nodes so everyone can mine it
+            for teammate in self.teammate_peers():
+                if self.peer_key_hex(teammate) != self.peer_key_hex(peer):
+                    self.ez_send(teammate, payload)
 
         await await_if_necessary(
             resp(BlockchainSubmitTransactionResponsePayload(True, tx_hash, "transaction accepted"))
@@ -900,7 +897,7 @@ class Lab3BlockchainCommunity(Community, PeerObserver):
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--key", default="lab1_identity.pem")
+    parser.add_argument("--key", default="assignmentskey.pem")
     parser.add_argument("--port", type=int, default=8091)
     parser.add_argument("--group-id", dest="group_id", help="your lab 2 group id")
     parser.add_argument("--register", action="store_true", default=False)
@@ -910,11 +907,6 @@ async def main() -> None:
         action="append",
         dest="member_keys",
         help="pass exactly 3 member public keys in registration order",
-    )
-    parser.add_argument(
-        "--miner-key",
-        dest="miner_key",
-        help="public key hex of the designated miner, defaults to the first --member-key",
     )
     args = parser.parse_args()
 
@@ -969,7 +961,7 @@ async def main() -> None:
 
     if global_overlay is not None:
         global_overlay.configure(member_keys_hex, group_id)
-    blockchain_overlay.configure(member_keys_hex, miner_key_hex=args.miner_key)
+    blockchain_overlay.configure(member_keys_hex)
 
     local_key_hex = blockchain_overlay.my_peer.public_key.key_to_bin().hex()
     if local_key_hex not in member_keys_hex:
@@ -978,9 +970,7 @@ async def main() -> None:
 
     print("ipv8 started for lab 3")
     print(f"my public key {local_key_hex}")
-    print(
-        f"my role {'miner' if blockchain_overlay.is_miner() else 'verifier'} | designated miner {blockchain_overlay.miner_key_hex}"
-    )
+    print("[blockchain] Every node configured to simultaneously compete and mine blocks.")
 
     try:
         if global_overlay is not None:
